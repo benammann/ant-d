@@ -1,0 +1,30 @@
+syntax = "proto3";
+package antd;
+
+service AntDaemon {
+  rpc ListSensors(ListSensorsRequest) returns (ListSensorsResponse);
+  rpc StreamHeartRate(StreamHeartRateRequest) returns (stream HeartRateMessage);
+}
+
+message StreamHeartRateRequest {
+  int64 serial_number = 1;
+}
+message HeartRateMessage {
+  int32 heart_rate = 1;
+}
+
+message ListSensorsRequest {}
+message ListSensorsResponse {
+  repeated Sensor sensors = 1;
+}
+
+enum SensorType {
+  UNSPECIFIED = 0;
+  HEART_RATE = 1;
+}
+
+message Sensor {
+  SensorType sensor_type = 1;
+  int64 device_id = 2;
+  int64 serial_number = 3;
+}
