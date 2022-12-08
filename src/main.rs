@@ -25,14 +25,11 @@ fn main() {
     match driver::device::new_ant_device(args.vendor_id, args.product_id) {
         Ok(mut device) => {
             device.start();
-            thread::sleep(time::Duration::from_millis(5000));
-            device.stop();
+            match server::start_server() {
+                Err(error) => panic!("could not start server: {:?}", error),
+                Ok(()) => return,
+            }
         },
         Err(e) => panic!("{}", e)
     }
-
-    // match server::start_server() {
-    //     Err(error) => panic!("could not start server: {:?}", error),
-    //     Ok(()) => return,
-    // }
 }
