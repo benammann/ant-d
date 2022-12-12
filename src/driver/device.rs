@@ -1,69 +1,17 @@
+use std::borrow::{Borrow, BorrowMut};
 use std::fmt::Error;
+use std::sync::mpsc::Sender;
 use std::time::Duration;
-use rusb::{Context, Device, DeviceDescriptor, DeviceHandle, UsbContext};
-use rusb::constants::{LIBUSB_ENDPOINT_IN, LIBUSB_ENDPOINT_OUT};
+use rusb::{Context, Device, DeviceDescriptor, DeviceHandle, Direction, Recipient, request_type, RequestType, UsbContext};
+use rusb::constants::{LIBUSB_DT_STRING, LIBUSB_ENDPOINT_IN, LIBUSB_ENDPOINT_OUT, LIBUSB_REQUEST_GET_DESCRIPTOR, LIBUSB_REQUEST_SET_DESCRIPTOR};
 use crate::driver::messages;
 use crate::driver::messages::Message;
 
-pub struct AntDevice {
-    device: Device<Context>,
-    context: Context,
-    descriptor: DeviceDescriptor,
-    handle: DeviceHandle<Context>,
-    buf: Message,
-    is_running: bool
-}
-
-impl AntDevice {
-
-    pub fn start(&self) {
-        // todo: loop read messages, verify them and send them to the grpc server
-    }
-
-    pub fn stop(&mut self) {
-       self.is_running = false;
-    }
-
-    fn open(&self) -> rusb::Result<usize> {
-        return Ok(0);
-    }
-
-    fn close(&self) -> rusb::Result<usize> {
-        let res1 = self.write(messages::close_channel_message(0));
-        let res2 = self.write(messages::system_reset_message());
-        return res1.and_then(|_| res2);
-    }
-
-    fn read(&self) -> Box<Vec<u8>> {
-        let mut msg = vec![];
-        return match self.handle.read_bulk(LIBUSB_ENDPOINT_IN,&mut msg, self.get_timeout()) {
-            Ok(size) => Box::new(msg),
-            _ => {
-                println!("cloud not read");
-                return Box::new(msg)
-            }
-        }
-    }
-
-    fn write(&self, mut buf: messages::Message) -> rusb::Result<usize> {
-        return self.handle.write_bulk(LIBUSB_ENDPOINT_OUT, buf.as_mut_slice(), self.get_timeout());
-    }
-
-    fn buffer_size(&self) -> u32 {
-        return 64;
-    }
-
-    fn get_timeout(&self) -> Duration {
-        return Duration::from_secs(20);
-    }
-
-}
-
-pub fn open_device<T: UsbContext>(
-    context: &mut T,
+pub fn open_device(
+    context: &Context,
     vid: u16,
     pid: u16,
-) -> Option<(Device<T>, DeviceDescriptor, DeviceHandle<T>)> {
+) -> Option<(Device<Context>, DeviceDescriptor, DeviceHandle<Context>)> {
     let devices = match context.devices() {
         Ok(d) => d,
         Err(_) => return None,
@@ -86,22 +34,79 @@ pub fn open_device<T: UsbContext>(
     None
 }
 
-pub fn new_ant_device(vendor_id: u16, product_id: u16) -> Result<AntDevice, Error> {
-    return match Context::new() {
-        Ok(mut context) => match open_device(&mut context, vendor_id, product_id) {
-            Some((device, descriptor, handle)) => {
-                let mut msg = vec![];
-                Ok(AntDevice{
-                    device,
-                    descriptor,
-                    context,
-                    handle,
-                    is_running: true,
-                    buf: Box::new(msg),
-                })
-            },
-            None => panic!("could not find device")
-        },
-        Err(e) => panic!("could not initialize libusb: {}", e),
+fn read(handle: &DeviceHandle<Context>) -> Message {
+    let mut msg = vec![];
+    return match handle.read_control(
+        request_type(Direction::In, RequestType::Standard, Recipient::Device),
+        LIBUSB_REQUEST_GET_DESCRIPTOR,
+        u16::from(LIBUSB_DT_STRING) << 8,
+        0,
+        &mut msg,
+        get_timeout()
+    ) {
+        Ok(size) => Box::new(msg),
+        Err(error) => panic!("could not read {}", error),
+        _ => {
+        println!("cloud not read");
+        return Box::new(msg)
+        }
     }
+}
+
+fn write(handle: &DeviceHandle<Context>, mut msg: Message) -> rusb::Result<usize> {
+    return handle.write_control(
+        request_type(Direction::Out, RequestType::Standard, Recipient::Device),
+        LIBUSB_REQUEST_GET_DESCRIPTOR,
+        u16::from(LIBUSB_DT_STRING) << 8,
+        0,
+        &mut msg,
+        get_timeout()
+    );
+}
+
+fn write_wrapper(handle: &DeviceHandle<Context>, mut msg: Message) {
+    return match write(handle, msg) {
+        Err(error) => panic!("could not write: {}", error),
+        _ => {}
+    }
+}
+
+fn get_timeout() -> Duration {
+    return Duration::from_millis(100);
+}
+
+pub fn stream_rx_scan_mode(vendor_id: u16, product_id: u16, tx: Sender<Message>) -> Result<(), Error> {
+
+    let ctx = match Context::new() {
+        Ok(context) => context,
+        Err(e) => panic!("could not initialize libusb: {}", e),
+    };
+
+    let (_, _, mut handle) = open_device(&ctx, vendor_id, product_id).expect("could not open device");
+
+    match handle.reset() {
+        Err(err) => panic!("could not reset {}", err),
+        _ => {}
+    }
+
+    write_wrapper(&handle, messages::system_reset());
+    write_wrapper(&handle, messages::set_network_key(0, messages::constants::ant_plus_network_key()));
+    write_wrapper(&handle, messages::assign_channel(0, 0x40));
+    write_wrapper(&handle, messages::set_channel_id(0));
+    write_wrapper(&handle, messages::set_channel_rf_frequency(0, 2457));
+    write_wrapper(&handle, messages::open_rx_scan_mode());
+
+    loop {
+        // read next message from device
+        let msg = read(&handle);
+
+        // only send sync messages to tx
+        if msg.len() <= 0 || msg[0] != messages::constants::MESSAGE_TX_SYNC {
+            continue
+        }
+
+        // todo: integrity checking but tbh who needs that :trollface:
+        tx.send(msg).unwrap();
+    }
+
 }

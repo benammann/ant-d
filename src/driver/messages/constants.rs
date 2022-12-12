@@ -1,3 +1,7 @@
+pub fn ant_plus_network_key() -> Vec<u8> {
+    return vec![185, 165, 33, 251, 189, 114, 195, 69];
+}
+
 pub const MESSAGE_RF: u8 = 0x01;
 
 pub const MESSAGE_TX_SYNC: u8 = 0xA4;
